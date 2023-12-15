@@ -1,0 +1,637 @@
+---
+title: "Untitled"
+output: html_document
+date: "2023-11-27"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# nhanes dataset
+
+file_path <- "NHANES_final_dataset.csv"
+
+# Read the CSV file into a data frame
+nhanes <- read.csv(file_path)
+
+library(nhanesA)
+```
+
+
+
+```{r}
+#summary(nhanes)
+#print(sum(is.na(nhanes$DUQ380D)))
+#print(nhanes$SLQ300)
+
+#SLQ300 - time as string; format = "%H:%M" 
+#SLQ310 - time as string; format = "%H:%M"
+#SLQ320 - time as string; format = "%H:%M"
+#SLQ330 - time as string (but prints out oddly); format = "%H:%M:%S"
+#DUD380F - all 42143 variables are empty -> dropping this column
+#DUQ380D - all 42143 variables are empty -> dropping this column
+#SLQ070B - all 42143 variables are empty -> dropping this column
+#DEPR_RISK - categorical as string
+
+#converting time to datetime objects, re-categorizing categorical data 
+nhanes <- nhanes %>%
+  mutate(
+    SLQ300 = case_when(
+      SLQ300 %in% c("99999", "77777", "NA") | is.na(SLQ300) ~ as.character(SLQ300),
+      TRUE ~ as.character(parse_date_time(SLQ300, orders = c("HM", "HMS")))
+    )
+  ) %>%
+  
+  mutate(
+    SLQ310 = case_when(
+      SLQ310 %in% c("99999", "77777", "NA") | is.na(SLQ310) ~ as.character(SLQ310),
+      TRUE ~ as.character(parse_date_time(SLQ310, orders = c("HM", "HMS")))
+    )
+  ) %>%
+  
+  mutate(
+    SLQ320 = case_when(
+      SLQ320 %in% c("99999", "77777", "NA") | is.na(SLQ320) ~ as.character(SLQ320),
+      TRUE ~ as.character(parse_date_time(SLQ320, orders = c("HM", "HMS")))
+    )
+  ) %>%
+  
+  mutate(
+    SLQ330 = case_when(
+      SLQ330 %in% c("99999", "77777", "NA") | is.na(SLQ330) ~ as.character(SLQ330),
+      TRUE ~ as.character(parse_date_time(SLQ330, orders = c("HM", "HMS")))
+    )
+  ) %>%
+  
+  mutate(
+    DEPR_RISK = case_when(
+      DEPR_RISK == "Yes" ~ 1,
+      DEPR_RISK == "No" ~ 0,
+      is.na(DEPR_RISK) ~ NA_integer_,
+      TRUE ~ NA_integer_  
+    )
+  )
+
+```
+```{r}
+#print(nhanes$SLQ330)
+print(nhanes$DEPR_RISK)
+```
+
+
+To classify drinkers, we look at number of drinks per day, at least once per month. 
+non-drinker: 0 drink last year; never drink: 0; 
+Light: 0-3; Moderate: 4-7; Heavy: 8-11; Abuse: >=12; 
+
+- don't know, refused, missing are excluded
+
+- reference: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9722540/
+
+- Use dataset J as sample
+
+```{r}
+#define never drinkers (lifetime abstainer)
+
+#never_drinker <- df_J[df_J$ALQ111 == "2",]
+#never_drinker
+# ** this method include all the ALQ111 = NA
+
+library(dplyr)
+never_drinker<- df_J %>%
+  filter(ALQ111 == "2")
+never_drinker
+#summary(never_drinker)
+```
+```{r}
+#define non-drinker (past year abstainers)
+non_drinker<- df_J %>%
+  filter(ALQ121 == "0")
+non_drinker
+#summary(never_drinker)
+```
+```{r}
+#define very heavy drinker: >12 drinks per day
+very_heavy_drinker<- df_J %>%
+  filter(ALQ290 >= 1 & ALQ290 <= 7)
+very_heavy_drinker
+#summary(never_drinker)
+```
+
+
+```{r}
+#define heavy drinker: 8-11 drinks per day, and exclude very_heavy_drinker
+
+heavy_drinker <- df_J %>%
+  filter(ALQ280 >= 1 & ALQ280 <= 7, ALQ290 >= 8 & ALQ290 <= 10) 
+heavy_drinker
+
+#summary(never_drinker)
+```
+
+```{r}
+#define moderate drinkers: 4-7 drinks, exclude heavy/very heavy drinkers
+moderate_drinker <- df_J %>%
+  filter(ALQ142 >= 1 & ALQ142 <= 7, ALQ280 >= 8 & ALQ280 <= 10) 
+moderate_drinker
+```
+
+## updated definition of drinker levels, generalized in all cycles
+```{r}
+#nhanes$Year
+nhanes$DrinkerLevel <- cut(nhanes$ALQ130, breaks = c(0, 3, 7, 11, 15), labels = c("Light", "Moderate", "Heavy","super heavy"))
+```
+
+```{r}
+print(nhanes$DrinkerLevel)
+```
+
+
+
+***
+sampling weight analysis
+***
+```{r}
+
+depr_variables <- c('DPQ010', 'DPQ020', 'DPQ030', 'DPQ040', 'DPQ050', 'DPQ060', 'DPQ070', 'DPQ080', 'DPQ090', 'DPQ100')
+
+sleep_variables <- c( 'SLD012',  'SLD013', 'SLQ030', 'SLQ040', 'SLQ050', 'SLQ120')
+
+demo_variables <- c('SDDSRVYR', 'RIDSTATR', 'RIAGENDR', 'RIDAGEYR', 'RIDAGEMN', 'RIDRETH1', 'RIDRETH3', 'RIDEXMON', 'RIDEXAGM', 'DMQMILIZ', 'DMQADFC', 'DMDBORN4', 'DMDCITZN', 'DMDYRSUS', 'DMDEDUC3', 'DMDEDUC2', 'DMDMARTL', 'RIDEXPRG', 'SIALANG', 'SIAPROXY', 'SIAINTRP', 'FIALANG', 'FIAPROXY', 'FIAINTRP', 'MIALANG', 'MIAPROXY', 'MIAINTRP', 'AIALANGA', 'DMDHHSIZ', 'DMDFMSIZ', 'DMDHHSZA', 'DMDHHSZB', 'DMDHHSZE', 'DMDHRGND', 'DMDHRAGZ', 'DMDHREDZ', 'DMDHRMAZ', 'DMDHSEDZ', 'WTINT2YR', 'WTMEC2YR', 'SDMVPSU', 'SDMVSTRA', 'INDHHIN2', 'INDFMIN2', 'INDFMPIR')
+
+Alcohol_variables <- c('ALQ101','ALQ110','ALQ120Q','ALQ120U','ALQ130','ALQ141Q','ALQ141U','ALQ151','ALQ160')
+
+nhc1718svy <- svydesign(id=~SDMVPSU, weights=~WTMEC2YR,strata=~SDMVSTRA, survey.lonely.psu = "adjust", nest=TRUE, data=nhanes[nhanes$Year=="2017-2018", ])
+
+
+nhanesAlcohol <- svydesign(id=~SDMVPSU, weights=~WTMEC2YR,strata=~SDMVSTRA, survey.lonely.psu = "adjust", nest=TRUE, data=Alcohol_variables)
+
+nhanesAlcohol <- svyCreateTableOne(data=nhc1718svy, vars=Alcohol_variables, strata="RIAGENDR")
+print(nhanesAlcohol)
+
+# depression variables
+tableone1718_depr <- svyCreateTableOne(data=nhc1718svy, vars=depr_variables, strata="RIAGENDR")
+
+# sleep variables
+tableone1718_sleep <- svyCreateTableOne(data=nhc1718svy, vars=sleep_variables, strata="RIAGENDR")
+
+print(tableone1718_sleep)
+```
+
+
+## visualization of drinker levels by cycles
+
+```{r}
+nhanes_plot_A <-nhanes[complete.cases(nhanes$DrinkerLevel), ]
+# Remove rows with missing values in DrinkerLevel
+
+# Plotting
+ggplot(nhanes_plot_A, aes(x = Cycle, fill = DrinkerLevel)) +
+  geom_bar(position = "fill") +  # Use position = "fill" to show proportions
+  labs(title = "Distribution of Drinker Levels by Cycle", y = "Proportion") +
+  scale_fill_manual(values = c("Light" = "lightblue", "Moderate" = "orange", "Heavy" = "red", "super heavy" = "darkred")) +
+  theme_minimal() 
+
+```
+```{r}
+#line chart of drinker level proportions across cycles
+nhanes_data <- nhanes %>%
+  select(DrinkerLevel, Cycle) %>%
+  na.omit()
+
+# Calculate proportions for each DrinkerLevel in each Cycle
+options(dplyr.summarise.inform = FALSE)
+proportions_data <- nhanes_data %>%
+  group_by(Cycle, DrinkerLevel) %>%
+  summarise(count = n())
+#proportions_data
+
+data <- data.frame(
+  Cycle = rep(c("2005-2006", "2007-2008", "2009-2010", "2011-2012", "2013-2014", "2015-2016", "2017-2018"), each = 4),
+  DrinkerLevel = rep(c("Light", "Moderate", "Heavy", "super heavy"), times = 7),
+  Count = c(2160, 495, 89, 60, 2480, 646, 105, 62, 2709, 711, 124, 94, 2522, 644, 86, 57, 2818, 616, 90, 56, 2617, 598, 96, 64, 2836, 519, 74, 60)
+)
+
+# Calculate proportions
+data <- data %>%
+  group_by(Cycle) %>%
+  mutate(Proportion = Count / sum(Count))
+data
+# Plotting with ggplot2
+ggplot(data, aes(x = Cycle, y = Proportion, color = DrinkerLevel, group = DrinkerLevel)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Proportion of Drinker Levels in Each Cycle", y = "Proportion", color = "Drinker Level") +
+  scale_color_manual(values = c("Light" = "lightblue", "Moderate" = "orange", "Heavy" = "red", "super heavy" = "darkred")) +
+  theme_minimal()
+```
+
+
+
+```{r}
+# Plotting
+ggplot(nhanes_plot_A, aes(x = Cycle, fill = DrinkerLevel)) +
+  geom_bar(position = "fill") +
+  labs(title = "Distribution of Drinker Levels by Cycle and Gender", y = "Proportion") +
+  scale_fill_manual(values = c("Light" = "lightblue", "Moderate" = "orange", "Heavy" = "red", "super heavy" = "darkred")) +
+  theme_minimal() +
+  facet_grid(. ~ RIAGENDR) 
+```
+```{r}
+nhanes_plot_A$RIAGENDR <- factor(nhanes_plot_A$RIAGENDR)
+
+# Filter data for Heavy drinkers
+super_heavy_drinkers <- subset(nhanes_plot_A, DrinkerLevel == "super heavy")
+heavy_drinkers <- subset(nhanes_plot_A, DrinkerLevel == "Heavy")
+moderate_drinkers <- subset(nhanes_plot_A, DrinkerLevel == "Moderate")
+light_drinkers <- subset(nhanes_plot_A, DrinkerLevel == "Light")
+
+
+# Plotting
+ggplot(heavy_drinkers, aes(x = Cycle, fill = RIAGENDR, group = RIAGENDR)) +
+  geom_bar(position = "fill") +
+  labs(title = "Percentage of Gender in Heavy Drinkers by Cycle", y = "Proportion") +
+  scale_fill_manual(values = c("1" = "blue", "2" = "pink")) +
+  theme_minimal() 
+
+ggplot(moderate_drinkers, aes(x = Cycle, fill = RIAGENDR, group = RIAGENDR)) +
+  geom_bar(position = "fill") +
+  labs(title = "Percentage of Gender in moderate Drinkers by Cycle", y = "Proportion") +
+  scale_fill_manual(values = c("1" = "blue", "2" = "pink")) +
+  theme_minimal() 
+
+ggplot(light_drinkers, aes(x = Cycle, fill = RIAGENDR, group = RIAGENDR)) +
+  geom_bar(position = "fill") +
+  labs(title = "Percentage of Gender in light Drinkers by Cycle", y = "Proportion") +
+  scale_fill_manual(values = c("1" = "blue", "2" = "pink")) +
+  theme_minimal() 
+
+ggplot(super_heavy_drinkers, aes(x = Cycle, fill = RIAGENDR, group = RIAGENDR)) +
+  geom_bar(position = "fill") +
+  labs(title = "Percentage of Gender in super heavy Drinkers by Cycle", y = "Proportion") +
+  scale_fill_manual(values = c("1" = "blue", "2" = "pink")) +
+  theme_minimal() 
+```
+```{r}
+nhanes$variables
+```
+
+
+```{r}
+#nhanes$DEPR_RISK
+
+```
+```{r}
+deprSymptoms <- data.frame(
+  Cycle = c("2017-2018", "2015-2016", "2013-2014", "2011-2012", "2009-2010", "2007-2008", "2005-2006"),
+  Frequency = sapply(c("Yes", "No"), function(status) {
+    sapply(c("2017-2018", "2015-2016", "2013-2014", "2011-2012", "2009-2010", "2007-2008", "2005-2006"), function(cycle) {
+      sum(nhanes$Year == cycle & nhanes$DEPR_RISK == status, na.rm = TRUE)
+    })
+  }),
+  Depression_Status = rep(c("Depression", "No Depression"), each = 7)
+)
+deprSymptoms <- deprSymptoms %>%
+  mutate(totalFrequency = Frequency.Yes + Frequency.No)
+head(deprSymptoms)
+
+
+
+
+
+```
+
+```{r}
+
+
+# Reshape the data to long format
+your_data_long <- gather(deprSymptoms, key = "Response", value = "Frequency", -Cycle, -Depression_Status, -totalFrequency)
+
+# Filter the data for "Yes" and "No"
+your_data_long <- your_data_long[your_data_long$Response %in% c("Frequency.Yes", "Frequency.No"), ]
+
+# Plotting with ggplot2
+ggplot(your_data_long, aes(x = Cycle, y = Frequency, fill = Response)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Frequency Chart of Yes and No in Each Cycle",
+       x = "Cycle",
+       y = "Frequency",
+       fill = "Response") +
+  theme_minimal()
+
+ggplot(your_data_long, aes(x = Cycle, y = totalFrequency)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "total Frequency Chart in Each Cycle",
+       x = "Cycle",
+       y = "total Frequency") +
+  theme_minimal()
+```
+
+
+```{r}
+#depression
+
+nhanes_data <- subset(nhanes, select = c("Cycle", "DEPR_RISK"))
+nhanes_data <-nhanes_data[complete.cases(nhanes_data$DEPR_RISK), ]
+# Plotting with ggplot2
+library(dplyr)
+
+# Count the occurrences of each combination of Cycle and DEPR_RISK
+plot_data <- nhanes_data %>%
+  group_by(Cycle, DEPR_RISK) %>%
+  summarise(count = n())
+plot_data
+
+# Create the bar plot
+ggplot(plot_data, aes(x = Cycle, y = count, fill = DEPR_RISK)) +
+  geom_bar(stat = "identity") +geom_text(aes(label = count), position = position_stack(vjust = 0.5))+
+  labs(title = "Bar Plot of DEPR_RISK by Cycle",
+       x = "Cycle",
+       y = "Count",
+       fill = "DEPR_RISK") +
+  theme_minimal()
+
+#line chart
+data_depr_risk <- data.frame(
+  Cycle = rep(c("2005-2006", "2007-2008", "2009-2010", "2011-2012", "2013-2014", "2015-2016", "2017-2018"), each = 2),
+  DEPR_RISK = rep(c("No", "Yes"), times = 7),
+  Count = c(4508, 328, 4897, 550, 5030, 546, 4486, 458, 4866, 527, 4728, 433, 4613, 477)
+)
+
+# Calculate proportions
+data_depr_risk <- data_depr_risk %>%
+  group_by(Cycle) %>%
+  mutate(Proportion = Count / sum(Count))
+
+# Plotting with ggplot2
+ggplot(data_depr_risk, aes(x = Cycle, y = Proportion, color = DEPR_RISK, group = DEPR_RISK)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Proportion of DEPR_RISK in Each Cycle", y = "Proportion", color = "depression risk") +
+  scale_color_manual(values = c("No" = "lightblue", "Yes" = "darkred")) +
+  theme_minimal()
+
+
+# Plotting with ggplot2
+ggplot(data_depr_risk, aes(x = Cycle, y = Proportion, fill = DEPR_RISK)) +
+  geom_bar(stat = "identity", position = "stack") +
+  
+  labs(title = "Proportion of depression risk in Each Cycle",
+       y = "Proportion",
+       fill = "DEPR_RISK") +
+  scale_fill_manual(values = c("No" = "lightblue", "Yes" = "darkred")) +
+  theme_minimal()
+
+
+
+```
+
+```{r}
+#sleep disorder
+
+
+nhanes_data <- subset(nhanes, SLQ050 %in% c(1, 2), select = c("DEPR_RISK", "SLQ050", "Cycle"))
+nhanes_data <-nhanes_data[complete.cases(nhanes_data$SLQ050), ]
+nhanes_data$SLQ050 <- factor(nhanes_data$SLQ050)
+# Plotting with ggplot2
+library(dplyr)
+
+# Count the occurrences of each combination of Cycle and DEPR_RISK
+plot_data <- nhanes_data %>%
+  group_by(Cycle, SLQ050) %>%
+  summarise(count = n())
+plot_data
+
+# Create the bar plot
+ggplot(plot_data, aes(x = Cycle, y = count, fill = SLQ050)) +
+  geom_bar(stat = "identity") +geom_text(aes(label = count), position = position_stack(vjust = 0.5))+
+  labs(title = "Bar Plot of sleep disorder by Cycle",
+       x = "Cycle",
+       y = "Count",
+       fill = "sleep disorder") +
+  theme_minimal()
+
+#proportion bar plot
+data_slq050 <- data.frame(
+  Cycle = rep(c("2005-2006", "2007-2008", "2009-2010", "2011-2012", "2013-2014", "2015-2016", "2017-2018"), each = 2),
+  SLQ050 = rep(c(1, 2), times = 7),
+  Count = c(1184, 4946, 1438, 5102, 1601, 5285, 1380, 4792, 1582, 4880, 1629, 4694, 1621, 4535)
+)
+
+# Calculate proportions
+data_slq050 <- data_slq050 %>%
+  arrange(SLQ050) %>%
+  group_by(Cycle) %>%
+  mutate(Proportion = Count / sum(Count))
+# Plotting the proportion bar plot
+ggplot(data_slq050, aes(x = Cycle, y = Proportion, fill = as.factor(SLQ050))) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(title = "Proportion of sleep disorder in Each Cycle",
+       y = "Proportion",
+       fill = "sleep disorder") +
+  scale_fill_manual(values = c("2" = "lightblue","1" = "darkred")) +
+  theme_minimal()
+
+
+```
+
+```{r}
+
+
+# Count the occurrences of each combination of Cycle and DEPR_RISK
+plot_data <- nhanes_data %>%
+  group_by(Cycle, SLQ050,DEPR_RISK) %>%
+  summarise(count = n())
+plot_data
+
+ggplot(plot_data, aes(x = Cycle, y = count, fill = interaction(SLQ050, DEPR_RISK))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Bar Plot of Counts by Cycle, SLQ050, and DEPR_RISK",
+       x = "Cycle",
+       y = "Count",
+       fill = "Interaction(SLQ050, DEPR_RISK)") +
+  theme_minimal()
+
+```
+```{r}
+library(vcd)
+nhanes_data<- nhanes
+nhanes_data <- subset(nhanes, SLQ050 %in% c(1, 2), select = c("DEPR_RISK", "SLQ050", "Cycle"))
+
+nhanes_data <-nhanes_data[complete.cases(nhanes_data$SLQ050), ]
+nhanes_data <-nhanes_data[complete.cases(nhanes_data$DEPR_RISK), ]
+contingency_table <- xtabs(~ DEPR_RISK + SLQ050 + Cycle, data = nhanes_data)
+
+# Create the mosaic plot
+mosaic(contingency_table)
+```
+
+```{r}
+
+# Subset the data
+nhanes_data <- subset(nhanes, SLQ050 %in% c(1, 2), select = c("DEPR_RISK", "SLQ050", "Cycle"))
+
+# Drop incomplete cases
+nhanes_data <- na.omit(nhanes_data)
+
+# Create a contingency table
+contingency_table <- xtabs(~ DEPR_RISK + SLQ050 + Cycle, data = nhanes_data)
+
+# Create the mosaic plot
+mosaic(contingency_table, shade = TRUE,color=c("blue", "red"))
+```
+
+
+```{r}
+nhanes_data <- subset(nhanes, SLQ050 %in% c(1, 2)& DEPR_RISK %in% c("Yes","No"),select = c("DEPR_RISK", "SLQ050", "Cycle"))
+nhanes_data$SLQ050 <- factor(nhanes_data$SLQ050)
+#nhanes_data
+
+# Count the occurrences of each combination of Cycle and DEPR_RISK
+plot_data <- nhanes_data %>%
+  group_by(Cycle, SLQ050,DEPR_RISK) %>%
+  summarise(count = n())
+plot_data
+
+# Plotting with ggplot2
+ggplot(nhanes_data, aes(x = DEPR_RISK, fill = SLQ050)) +
+  geom_bar(position = "fill", color = "white") +
+  facet_wrap(~Cycle) +
+  labs(title = "Association Between DEPR_RISK and SLQ050 in Each Cycle",
+       x = "DEPR_RISK",
+       y = "Proportion",
+       fill = "SLQ050") +
+  theme_minimal()
+
+```
+```{r}
+nhanes_data <- nhanes %>%
+  select(DrinkerLevel, DEPR_RISK) %>%
+  na.omit()
+
+# Plotting with ggplot2
+ggplot(nhanes_data, aes(x = DrinkerLevel, fill = DEPR_RISK)) +
+  geom_bar(position = "fill", color = "white") +
+  labs(title = "Association Between DrinkerLevel and DEPR_RISK",
+       x = "DrinkerLevel",
+       y = "Proportion",
+       fill = "DEPR_RISK") +
+  theme_minimal()
+```
+```{r}
+nhanes_data <- nhanes %>%
+  select(DrinkerLevel, DEPR_RISK, Cycle) %>%
+  na.omit()
+
+# Plotting with ggplot2
+ggplot(nhanes_data, aes(x = DrinkerLevel, fill = DEPR_RISK)) +
+  geom_bar(position = "fill", color = "white") +
+  facet_wrap(~Cycle) +
+  labs(title = "Association Between DrinkerLevel and DEPR_RISK in Each Cycle",
+       x = "DrinkerLevel",
+       y = "Proportion",
+       fill = "DEPR_RISK") +
+  theme_minimal()
+```
+
+
+```{r}
+#visualization
+library(ggplot2)
+# Combine data for plotting
+plot_data <- rbind(
+  data.frame(Level = "moderate", Count = nrow(moderate_drinker)),
+  data.frame(Level = "heavy", Count = nrow(heavy_drinker)),
+  data.frame(Level = "very heavy", Count = nrow(very_heavy_drinker)),
+  data.frame(Level = "non-drinker", Count = nrow(non_drinker)),
+  data.frame(Level = "never drinker", Count = nrow(never_drinker))
+)
+
+# Plotting
+ggplot(plot_data, aes(x = Level, y = Count, fill = Level)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Distribution of Drinkers by Level", y = "Count")
+```
+
+```{r}
+#map gender to factor
+
+moderate_drinker$RIAGENDR <- factor(moderate_drinker$RIAGENDR)
+heavy_drinker$RIAGENDR <- factor(heavy_drinker$RIAGENDR)
+very_heavy_drinker$RIAGENDR <- factor(very_heavy_drinker$RIAGENDR)
+never_drinker$RIAGENDR <- factor(never_drinker$RIAGENDR)
+non_drinker$RIAGENDR <- factor(non_drinker$RIAGENDR)
+```
+
+```{r}
+#combine gender and age to plot data 1
+plot_data1 <- rbind(
+  data.frame(Level = "moderate", Count = nrow(moderate_drinker), Gender = moderate_drinker$RIAGENDR, Age = moderate_drinker$RIDAGEYR),
+  data.frame(Level = "heavy", Count = nrow(heavy_drinker), Gender = heavy_drinker$RIAGENDR, Age = heavy_drinker$RIDAGEYR),
+  data.frame(Level = "very heavy", Count = nrow(very_heavy_drinker), Gender = very_heavy_drinker$RIAGENDR, Age = very_heavy_drinker$RIDAGEYR), 
+  data.frame(Level = "non-drinker", Count = nrow(non_drinker), Gender = non_drinker$RIAGENDR, Age = non_drinker$RIDAGEYR),
+  data.frame(Level = "never_drinker", Count = nrow(never_drinker), Gender = never_drinker$RIAGENDR, Age = never_drinker$RIDAGEYR)
+)
+```
+
+```{r,fig.cap = '1:M,2:F'}
+# Combine data for plotting
+
+
+
+
+# Plotting with facets
+#ggplot(plot_data1, aes(x = Level, y = Count, fill = Gender)) +
+#  geom_bar(stat = "identity", position = "dodge") +
+#  facet_wrap(~Gender) +
+#  labs(title = "Distribution of Drinkers by Level and Gender", y = "Count")
+
+
+ggplot(plot_data1, aes(x = Level, fill = Gender)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Distribution of Drinkers by Level and Gender", y = "Count") +
+  facet_wrap(~Gender)
+```
+
+```{r}
+ggplot(plot_data1, aes(x = Level, y = Age, fill = Level)) +
+  geom_boxplot() +
+  labs(title = "Box Plot of Age by Drinking Level", y = "Age") +
+  theme_minimal()
+```
+
+*** 2015-2016 (I)
+```{r}
+df_I <- df[df$Year == "2015-2016",]
+                                             
+  
+
+```
+
+```{r}
+df_I$DrinkerLevel <- cut(df_I$ALQ130, breaks = c(0, 3, 7, 11, 15), labels = c("Light", "Moderate", "Heavy","super heavy"))
+
+```
+
+```{r}
+df_I$RIAGENDR <- factor(df_I$RIAGENDR)
+
+
+df_I %>% filter(!is.na(DrinkerLevel)) %>%
+ggplot(aes(x = DrinkerLevel, fill = RIAGENDR)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Distribution of Drinkers by Level and Gender", y = "Count") +
+  facet_wrap(~RIAGENDR)
+```
+
+```{r}
+df_I %>% filter(!is.na(DrinkerLevel)) %>%
+ggplot( aes(x = DrinkerLevel, y = RIDAGEYR, fill = DrinkerLevel)) +
+  geom_boxplot() +
+  labs(title = "Box Plot of Age by Drinking Level", y = "Age") +
+  theme_minimal()
+```
+
+
+

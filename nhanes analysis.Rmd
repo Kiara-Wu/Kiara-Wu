@@ -1,0 +1,966 @@
+---
+title: "Untitled"
+output: html_document
+date: '2024-01-10'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(survey)
+library(dplyr)
+library(tableone)
+library(ggplot2)
+library(svyVGAM)
+library(broom)
+library(pander)
+#bloom package: glance(): Summarizes model-level statistics in a tidy format, providing a concise overview of the model's performance.
+```
+
+```{r}
+#read cleaned dataset
+df1 <- read.csv("~/Downloads/5207 practicum/nhanes_new.csv")
+
+#df_main only contains main variables
+df_main <- select(df1, SEQN,WTINT7CYC,WTMEC7CYC,WTMEC2YR,WTINT2YR,SDMVPSU
+                     ,SDMVSTRA,RIDAGEYR,Cycle,Year,Drinker_level,DEPR_TOT,DEPR_SEVERITY,DEPR_RISK,Sleep_duration,
+                  Sleep_trouble,Race,Gender,Education,Marital,Fam_income)
+
+#change binary variables to factors
+cols_to_exclude <- c("SEQN","WTINT7CYC","WTMEC7CYC","WTMEC2YR","WTINT2YR","SDMVPSU"
+                     ,"SDMVSTRA","RIDAGEYR","DEPR_TOT")
+cols <- setdiff(names(df_main), cols_to_exclude)
+df_main[cols] <- lapply(df_main[cols],as.factor)
+```
+
+```{r}
+#main variables' frequency table one
+vars <- setdiff(names(df_main), "Cycle")
+table1 <- CreateTableOne(vars, data = df_main, strata = "DEPR_SEVERITY", test = FALSE, includeNA = TRUE,addOverall = TRUE)
+print(table1)
+
+```
+```{r}
+
+```
+
+
+
+```{r}
+#Age >= 18 only
+df_main <- df_main %>%
+  filter(RIDAGEYR >= 18)
+
+#Raw table one with age >= 18
+#table1_18 <- CreateTableOne(vars, data = df_main, strata = "DEPR_SEVERITY", test = FALSE, includeNA = TRUE,addOverall = TRUE)
+#print(table1_18)
+  
+```
+
+```{r}
+#omit dpq na
+df_main_noNA_dpq <- df_main%>%na.omit(df_main$DEPR_SEVERITY)%>%na.omit(df_main$DEPR_RISK)%>%na.omit(df_main$DEPR_TOT)
+table1_noNA_dpq <- CreateTableOne(vars, data = df_main_noNA_dpq, strata = "DEPR_SEVERITY", test = FALSE, includeNA = TRUE,addOverall = TRUE)
+#print(table1_noNA_dpq)
+
+#same results
+#omit na
+df_main_noNA <- na.omit(df_main)
+table1_noNA <- CreateTableOne(vars, data = df_main_noNA, strata = "DEPR_SEVERITY", test = FALSE, includeNA = TRUE,addOverall = TRUE)
+print(table1_noNA)
+
+# main analysis dataset
+write.csv(df_main_noNA,"nhanes_final.csv",row.names = FALSE)
+```
+
+```{r}
+#define ref levels for categorical vars
+df_main_noNA_dpq$Year <- relevel(df_main_noNA_dpq$Year, ref = "2005-2006")
+df_main_noNA_dpq$Drinker_level <- relevel(df_main_noNA_dpq$Drinker_level, ref = "Light")
+df_main_noNA_dpq$DEPR_SEVERITY <- relevel(df_main_noNA_dpq$DEPR_SEVERITY, ref = "No symptoms")
+df_main_noNA_dpq$DEPR_RISK <- relevel(df_main_noNA_dpq$DEPR_RISK, ref = "No")
+df_main_noNA_dpq$Gender <- relevel(df_main_noNA_dpq$Gender, ref = "M")
+df_main_noNA_dpq$Fam_income <- relevel(df_main_noNA_dpq$Fam_income, ref = "Middle Income")
+df_main_noNA_dpq$Sleep_trouble <- relevel(df_main_noNA_dpq$Sleep_trouble, ref = "No")
+df_main_noNA_dpq$Sleep_duration <- relevel(df_main_noNA_dpq$Sleep_duration, ref = "Average")
+
+#create survey design: 2005-2018
+df_main_svy <- svydesign(id = ~SDMVPSU, strata = ~SDMVSTRA, weights = ~WTMEC7CYC, nest = T, data = df_main_noNA_dpq)
+print(svyCreateTableOne(vars,
+                        strata = "DEPR_SEVERITY", data = df_main_svy, test = T),
+      missing = T, catDigits = 2, contDigits = 2)
+```
+
+
+## RQ1-1: how does alcohol use affect depression severity?
+
+
+```{r}
+#depression severity ~ alcohol use
+m1 <- svy_vglm(DEPR_SEVERITY ~ Drinker_level, family = multinomial(refLevel = "No symptoms"), design = df_main_svy)
+m2 <- svy_vglm(DEPR_SEVERITY ~ Drinker_level + Gender + RIDAGEYR + Race + Education + Marital + Fam_income, 
+               family = multinomial(refLevel = "No symptoms"), design = df_main_svy)
+#summary(m1)
+```
+
+```{r}
+#a function for result table
+
+tidy.svyVGAM <- function(
+    x,
+    conf.int = FALSE,
+    conf.level = 0.95,
+    exponentiate = FALSE,
+    ...){
+  #replace summary(x)$coefficients with summary(x)$coefitable
+  ret <- as_tibble(summary(x)$coeftable, rownames = "term")
+  #all of these stay same
+  colnames(ret) <- c("term", "estimate", "std.error", "statistics", "p.value")
+  coefs <- tibble::enframe(stats::coef(x), name = "term", value = "estimate")
+  if (conf.int){
+    ci <- broom:::broom_confint_terms(x, level = conf.level, ...)
+    ret <- dplyr::left_join(ret, ci, by = "term")
+  }
+  if (exponentiate){ret <- broom:::exponentiate(ret)}
+}
+```
+
+
+```{r}
+#RQ1-1 main effect 
+#select rows except intercepts, columns 'term,estimate,conf.low,conf.high,p-value' from result tibble tidy.svyVGAM
+r1 <- tidy.svyVGAM(m1, conf.int = T, exponentiate = T)[c(5:16), c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r1 <- r1 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r1 <- r1%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r1 <- r1[,c(1,6,5)] 
+
+#
+r2 <- tidy.svyVGAM(m2, conf.int = T, exponentiate = T)[c(5:16), c(1,2,6,7,5)]
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+r2 <- r2[,c(1,6,5)]
+
+result <- bind_cols(r1,r2[,c(2,3)])
+colnames(result) <- c("Variable","OR (95%CI)","p-value","aOR (95%CI)","p-value") 
+
+#aOR means more than one independent var V.S one dependent var (for m2 here)
+
+pander(result, caption = "Depression Severity ~ Alcohol use(with covariates)", keep.line.break=T, 
+       justify = c("left","center","center","center","center"), split.cells = 5, split.table = Inf)
+```
+
+## LRT for interaction term
+
+anova.vglm(nested, complex, test = "Chisq")
+
+regTermTest(complex, ~Drinker_level:Gender,method = "LRT")
+```{r}
+library(nnet)
+library(lmtest)
+# depression severity ~ alcohol use : gender ***
+complex <- multinom(DEPR_SEVERITY ~ Drinker_level:Gender, data = df_main_noNA_dpq)
+nested <- multinom(DEPR_SEVERITY ~ Drinker_level + Gender, data = df_main_noNA_dpq)
+lmtest::lrtest(nested, complex)
+
+# Race
+complex <- multinom(DEPR_SEVERITY ~ Drinker_level:Race + Gender + RIDAGEYR + Education + Marital + Fam_income, data = df_main_noNA_dpq)
+nested <- multinom(DEPR_SEVERITY ~ Drinker_level + Race + Gender + RIDAGEYR + Education + Marital + Fam_income, data = df_main_noNA_dpq)
+lmtest::lrtest(nested, complex)
+
+#marital
+complex <- multinom(DEPR_SEVERITY ~ Drinker_level:Marital + Gender + RIDAGEYR + Education + Race + Fam_income, data = df_main_noNA_dpq)
+nested <- multinom(DEPR_SEVERITY ~ Drinker_level + Marital + Race + Gender + RIDAGEYR + Education + Fam_income, data = df_main_noNA_dpq)
+lmtest::lrtest(nested, complex)
+
+#Fam Income ***
+complex <- multinom(DEPR_SEVERITY ~ Drinker_level:Fam_income + Gender + RIDAGEYR + Education + Marital + Race, data = df_main_noNA_dpq)
+nested <- multinom(DEPR_SEVERITY ~ Drinker_level + Race + Gender + RIDAGEYR + Education + Marital + Fam_income, data = df_main_noNA_dpq)
+lmtest::lrtest(nested, complex)
+```
+
+```{r}
+#interaction effect: gender
+m3 <- svy_vglm(DEPR_SEVERITY ~ Drinker_level + Drinker_level:Gender + RIDAGEYR + Race + Education + Marital + Fam_income, 
+               family = multinomial(refLevel = "No symptoms"), design = df_main_svy)
+
+#select rows except intercepts, columns 'term,estimate,conf.low,conf.high,p-value' from result tibble tidy.svyVGAM
+r1 <- tidy.svyVGAM(m3, conf.int = T, exponentiate = T)[c(81:96), c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r1 <- r1 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r1 <- r1%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r1 <- r1[,c(1,6,5)] 
+
+#result table
+colnames(r1) <- c("Variable","OR (95%CI)","p-value")
+pander(r1, caption = "Depression Severity ~ Alcohol use:gender", keep.line.break=T, 
+       justify = c("left","center","center"), split.cells = 3, split.table = Inf)
+
+
+
+
+
+```
+
+```{r}
+#interaction effect: family income
+m4 <- svy_vglm(DEPR_SEVERITY ~ Drinker_level + Drinker_level:Fam_income + RIDAGEYR + Gender + Education + Marital + Race, 
+               family = multinomial(refLevel = "No symptoms"), design = df_main_svy)
+
+#select rows except intercepts, columns 'term,estimate,conf.low,conf.high,p-value' from result tibble tidy.svyVGAM
+r1 <- tidy.svyVGAM(m4, conf.int = T, exponentiate = T)[c(77:108), c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r1 <- r1 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r1 <- r1%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r1 <- r1[,c(1,6,5)] 
+
+#for meeting
+colnames(r1) <- c("Variable","aOR (95%CI)","p-value")
+pander(r1, caption = "Depression Severity ~ Alcohol use:family income", keep.line.break=T, 
+       justify = c("left","center","center"), split.cells = 3, split.table = Inf)
+
+```
+
+
+## RQ1-2: how does alcohol use affect depression risk?
+```{r}
+# main effect
+# model 1
+m1 <- svyglm(DEPR_RISK ~ Drinker_level, design = df_main_svy, family = quasibinomial)
+r1 <- tidy(m1, conf.int = T, exponentiate = T)[c(2:4),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r1 <- r1 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r1 <- r1%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r1 <- r1[,c(1,6,5)] 
+
+# model 2
+m2 <- svyglm(DEPR_RISK ~ Drinker_level + Gender + RIDAGEYR + Race + Education + Marital + Fam_income, design = df_main_svy, family = quasibinomial )
+r2 <- tidy(m2, conf.int = T, exponentiate = T)[c(2:4),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r2 <- r2[,c(1,6,5)] 
+
+result <- bind_cols(r1, r2[,c(2,3)])
+colnames(result) <- c("Variable","OR (95%CI)","p-value","aOR (95%CI)","p-value") 
+
+pander(result, caption = "Depression Risk ~ Alcohol use(with covariates)", keep.line.break=T, 
+       justify = c("left","center","center","center","center"), split.cells = 5,split.table = Inf)
+```
+
+```{r}
+# LRT test for interaction term with depr_risk
+#gender
+complex <- svyglm(DEPR_RISK ~ Drinker_level:Gender+ Race+ Fam_income + RIDAGEYR + Education + Marital, design = df_main_svy, family = quasibinomial)
+nested <- svyglm(DEPR_RISK ~ Drinker_level+Gender+ Race+ Fam_income + RIDAGEYR + Education + Marital, design = df_main_svy, family = quasibinomial)
+print(regTermTest(complex, ~Drinker_level:Gender,method = "LRT"))
+
+#family income ***
+complex <- svyglm(DEPR_RISK ~ Drinker_level:Fam_income+ Race+Gender + RIDAGEYR + Education + Marital, design = df_main_svy, family = quasibinomial)
+nested <- svyglm(DEPR_RISK ~ Drinker_level+Fam_income+ Race+Gender + RIDAGEYR + Education + Marital, design = df_main_svy, family = quasibinomial)
+regTermTest(complex, ~Drinker_level:Fam_income,method = "LRT")
+
+#race
+complex <- svyglm(DEPR_RISK ~ Drinker_level:Race+ Fam_income+Gender + RIDAGEYR + Education + Marital, design = df_main_svy, family = quasibinomial)
+nested <- svyglm(DEPR_RISK ~ Drinker_level+Race+ Fam_income+Gender + RIDAGEYR + Education + Marital, design = df_main_svy, family = quasibinomial)
+regTermTest(complex, ~Drinker_level:Race,method = "LRT")
+```
+```{r}
+#interaction model: gender
+m3 <- svyglm(DEPR_RISK ~ Drinker_level + Drinker_level:Gender + RIDAGEYR + Race + Education + Marital + Fam_income, design = df_main_svy, family = quasibinomial)
+
+#select rows except intercepts, columns 'term,estimate,conf.low,conf.high,p-value' from result tibble tidy.svyVGAM
+r1 <- tidy(m3, conf.int = T, exponentiate = T)[c(21:24),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r1 <- r1 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r1 <- r1%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r1 <- r1[,c(1,6,5)] 
+
+
+#for meeting
+colnames(r1) <- c("Variable","aOR (95%CI)","p-value")
+pander(r1, caption = "Depression Risk ~ Alcohol use:Gender", keep.line.break=T, 
+       justify = c("left","center","center"), split.cells = 3, split.table = Inf)
+
+```
+```{r}
+#interaction model: family income
+m4 <- svyglm(DEPR_RISK ~ Drinker_level + Drinker_level:Fam_income + Gender + RIDAGEYR + Race + Education + Marital , design = df_main_svy, family = quasibinomial)
+
+#select rows except intercepts, columns 'term,estimate,conf.low,conf.high,p-value' from result tibble tidy.svyVGAM
+r1 <- tidy(m4, conf.int = T, exponentiate = T)[c(20:27),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r1 <- r1 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r1 <- r1%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r1 <- r1[,c(1,6,5)] 
+
+
+#for meeting
+colnames(r1) <- c("Variable","aOR (95%CI)","p-value")
+pander(r1, caption = "Depression Risk ~ Alcohol use:Family income", keep.line.break=T, 
+       justify = c("left","center","center"), split.cells = 3, split.table = Inf)
+```
+
+
+## RQ1-3: how does alcohol use affect depression symptoms?
+```{r}
+# model 1
+m1 <- svyglm(DEPR_TOT ~ Drinker_level, design = df_main_svy)
+r1 <- tidy(m1, conf.int = T, exponentiate = T)[c(2:4),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r1 <- r1 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r1 <- r1%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r1 <- r1[,c(1,6,5)] 
+
+# model 2
+m2 <- svyglm(DEPR_TOT ~ Drinker_level + Gender + RIDAGEYR + Race + Education + Marital + Fam_income, design = df_main_svy)
+r2 <- tidy(m2, conf.int = T, exponentiate = T)[c(2:4),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r2 <- r2[,c(1,6,5)] 
+
+result <- bind_cols(r1, r2[,c(2,3)])
+colnames(result) <- c("Variable","Coef. Estm. (95%CI)","p-value","Coef. Estm. (95%CI)","p-value") 
+
+pander(result, caption = "Depression symptoms ~ Alcohol use(with covariates)", keep.line.break=T, 
+       justify = c("left","center","center","center","center"), split.cells = 5,split.table = Inf)
+```
+
+```{r}
+# LRT test for interaction term with depr_tot
+#gender
+complex <- svyglm(DEPR_TOT ~ Drinker_level:Gender + Race + RIDAGEYR + Education + Marital + Fam_income, design = df_main_svy)
+nested <- svyglm(DEPR_TOT ~ Drinker_level+Gender +Race + RIDAGEYR + Education + Marital + Fam_income, design = df_main_svy)
+print(regTermTest(complex, ~Drinker_level:Gender,method = "LRT"))
+
+#family income
+complex <- svyglm(DEPR_TOT ~ Drinker_level:Fam_income + Race+ Gender + RIDAGEYR + Education + Marital, design = df_main_svy)
+nested <- svyglm(DEPR_TOT ~ Drinker_level+Fam_income+ Race+ Gender + RIDAGEYR + Education + Marital, design = df_main_svy)
+print(regTermTest(complex, ~Drinker_level:Fam_income,method = "LRT"))
+
+#race
+complex <- svyglm(DEPR_TOT ~ Drinker_level:Race + Gender + RIDAGEYR + Education + Marital + Fam_income, design = df_main_svy)
+nested <- svyglm(DEPR_TOT ~ Drinker_level+Race + Gender + RIDAGEYR + Education + Marital + Fam_income, design = df_main_svy)
+regTermTest(complex, ~Drinker_level:Race,method = "LRT")
+```
+```{r}
+#interaction model: gender
+m3 <- svyglm(DEPR_TOT ~ Drinker_level+Drinker_level:Gender + RIDAGEYR + Race + Education + Marital + Fam_income, design = df_main_svy)
+r2 <- tidy(m3, conf.int = T, exponentiate = T)[c(21:24),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r2 <- r2[,c(1,6,5)] 
+
+colnames(r2) <- c("Variable","Coef. Estm. (95%CI)","p-value") 
+
+pander(r2, caption = "Depression symptoms ~ Alcohol use(with covariates):Gender", keep.line.break=T, 
+       justify = c("left","center","center"), split.cells = 5,split.table = Inf)
+
+```
+```{r}
+#interaction model: family income
+m4 <- svyglm(DEPR_TOT ~ Drinker_level+Drinker_level:Fam_income + Gender+RIDAGEYR + Race + Education + Marital, design = df_main_svy)
+r2 <- tidy(m4, conf.int = T, exponentiate = T)[c(20:27),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r2 <- r2[,c(1,6,5)] 
+
+colnames(r2) <- c("Variable","Coef. Estm. (95%CI)","p-value") 
+
+pander(r2, caption = "Depression symptoms ~ Alcohol use(with covariates):Family income", keep.line.break=T, 
+       justify = c("left","center","center"), split.cells = 5,split.table = Inf)
+```
+
+
+
+# RQ2
+## RQ2-1: how does sleep affect depression severity?
+
+```{r}
+#LRT for depression severity
+library(nnet)
+library(lmtest)
+# depression severity ~ sleep_trouble : gender 
+complex <- multinom(DEPR_SEVERITY ~ Gender:Sleep_trouble + RIDAGEYR + Education + Marital + Fam_income, data = df_main_noNA_dpq)
+nested <- multinom(DEPR_SEVERITY ~ Sleep_trouble + Gender + RIDAGEYR + Education + Marital + Fam_income, data = df_main_noNA_dpq)
+lmtest::lrtest(nested, complex)
+
+#Fam Income 
+complex <- multinom(DEPR_SEVERITY ~ Sleep_trouble:Fam_income + Gender + RIDAGEYR + Education + Marital + Race, data = df_main_noNA_dpq)
+nested <- multinom(DEPR_SEVERITY ~ Sleep_trouble + Race + Gender + RIDAGEYR + Education + Marital + Fam_income, data = df_main_noNA_dpq)
+lmtest::lrtest(nested, complex)
+
+#race
+complex <- multinom(DEPR_SEVERITY ~ Sleep_trouble:Race + Gender + RIDAGEYR + Education + Marital + Fam_income, data = df_main_noNA_dpq)
+nested <- multinom(DEPR_SEVERITY ~ Sleep_trouble + Marital + Race + Gender + RIDAGEYR + Education + Fam_income, data = df_main_noNA_dpq)
+lmtest::lrtest(nested, complex)
+
+#education
+complex <- multinom(DEPR_SEVERITY ~ Sleep_trouble:Education + Gender + RIDAGEYR + Marital + Race + Fam_income, data = df_main_noNA_dpq)
+nested <- multinom(DEPR_SEVERITY ~ Sleep_trouble + Marital + Race + Gender + RIDAGEYR + Education + Fam_income, data = df_main_noNA_dpq)
+lmtest::lrtest(nested, complex)
+```
+
+
+```{r}
+#dataset: df_main_svy
+
+#depression severity ~ sleep trouble
+m1 <- svy_vglm(DEPR_SEVERITY ~ Sleep_trouble, family = multinomial(refLevel = "No symptoms"), design = df_main_svy)
+m2 <- svy_vglm(DEPR_SEVERITY ~ Sleep_trouble + Gender + RIDAGEYR + Race + Education + Marital + Fam_income, 
+               family = multinomial(refLevel = "No symptoms"), design = df_main_svy)
+
+#select rows except intercepts, columns 'term,estimate,conf.low,conf.high,p-value' from result tibble tidy.svyVGAM
+r1 <- tidy.svyVGAM(m1, conf.int = T, exponentiate = T)[c(5:8), c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r1 <- r1 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r1 <- r1%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r1 <- r1[,c(1,6,5)] 
+
+#
+r2 <- tidy.svyVGAM(m2, conf.int = T, exponentiate = T)[c(5:8), c(1,2,6,7,5)]
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+r2 <- r2[,c(1,6,5)]
+
+result <- bind_cols(r1,r2[,c(2,3)])
+colnames(result) <- c("Variable","OR (95%CI)","p-value","aOR (95%CI)","p-value") 
+
+#aOR means more than one independent var V.S one dependent var (for m2 here)
+
+pander(result, caption = "Depression Severity ~ Sleep trouble(with covariates)", keep.line.break=T, 
+       justify = c("left","center","center","center","center"), split.cells = 5, split.table = Inf)
+```
+ Interpretation:
+- The OR of 3.06: The odds of having mild depression severity for individuals with sleep trouble is 3.06 times the odds for individuals without sleep trouble.
+- Based on CI and P-value, the odds ratio is statistically significant. 
+- As you move down the table to higher depression severity levels, the odds ratios and adjusted odds ratios increase: The odds of having a certain level of depression severity of individuals with sleep trouble compared to individuals not having it become higher as depression severity increases.
+- significant association between sleep trouble and depression severity.
+
+
+
+```{r}
+#depression severity ~ sleep duration
+m1 <- svy_vglm(DEPR_SEVERITY ~ Sleep_duration, family = multinomial(refLevel = "No symptoms"), design = df_main_svy)
+m2 <- svy_vglm(DEPR_SEVERITY ~ Sleep_duration + Gender + RIDAGEYR + Race + Education + Marital + Fam_income, 
+               family = multinomial(refLevel = "No symptoms"), design = df_main_svy)
+
+#select rows except intercepts, columns 'term,estimate,conf.low,conf.high,p-value' from result tibble tidy.svyVGAM
+r1 <- tidy.svyVGAM(m1, conf.int = T, exponentiate = T)[c(5:12), c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r1 <- r1 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r1 <- r1%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r1 <- r1[,c(1,6,5)] 
+
+#
+r2 <- tidy.svyVGAM(m2, conf.int = T, exponentiate = T)[c(5:12), c(1,2,6,7,5)]
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+r2 <- r2[,c(1,6,5)]
+
+result <- bind_cols(r1,r2[,c(2,3)])
+colnames(result) <- c("Variable","OR (95%CI)","p-value","aOR (95%CI)","p-value") 
+
+#aOR means more than one independent var V.S one dependent var (for m2 here)
+
+pander(result, caption = "Depression Severity ~ Sleep duration(with covariates)", keep.line.break=T, 
+       justify = c("left","center","center","center","center"), split.cells = 5, split.table = Inf)
+```
+Interpretation:
+- OR 1.75: the odds for long sleep individuals to have mild depression is 1.75 times the odds for average sleep individuals.  Based on CI and p-value, the OR are all significant. 
+- OR 1.77: the odds for short sleep individuals to have mild depression is 1.77 times the odds for average sleep individuals. 
+- For both long/short sleep individuals, As depression severity increases, OR decreases. 
+- So compare to average sleep, short/long sleep people are more possible to get more severe depression.
+- OR are all significant. It means the odds for long/short sleep people to have mild/moderate/moderate severe/severe depression is significantly different from odds for average sleep. 
+
+```{r}
+# LRT : sleep duration
+# gender 
+complex <- multinom(DEPR_SEVERITY ~ Gender:Sleep_duration + RIDAGEYR + Education + Marital + Fam_income, data = df_main_noNA_dpq)
+nested <- multinom(DEPR_SEVERITY ~ Sleep_duration + Gender + RIDAGEYR + Education + Marital + Fam_income, data = df_main_noNA_dpq)
+lmtest::lrtest(nested, complex)
+
+#marital
+complex <- multinom(DEPR_SEVERITY ~ Sleep_duration:Marital + Gender + RIDAGEYR + Education + Race + Fam_income, data = df_main_noNA_dpq)
+nested <- multinom(DEPR_SEVERITY ~ Sleep_duration + Marital + Race + Gender + RIDAGEYR + Education + Fam_income, data = df_main_noNA_dpq)
+lmtest::lrtest(nested, complex)
+
+#Fam Income 
+complex <- multinom(DEPR_SEVERITY ~ Sleep_duration:Fam_income + Gender + RIDAGEYR + Education + Marital + Race, data = df_main_noNA_dpq)
+nested <- multinom(DEPR_SEVERITY ~ Sleep_duration + Race + Gender + RIDAGEYR + Education + Marital + Fam_income, data = df_main_noNA_dpq)
+lmtest::lrtest(nested, complex)
+
+#race
+complex <- multinom(DEPR_SEVERITY ~ Sleep_duration:Race + Gender + RIDAGEYR + Education + Marital + Fam_income, data = df_main_noNA_dpq)
+nested <- multinom(DEPR_SEVERITY ~ Sleep_duration + Marital + Race + Gender + RIDAGEYR + Education + Fam_income, data = df_main_noNA_dpq)
+lmtest::lrtest(nested, complex)
+
+#education
+complex <- multinom(DEPR_SEVERITY ~ Sleep_duration:Education + Gender + RIDAGEYR + Marital + Race + Fam_income, data = df_main_noNA_dpq)
+nested <- multinom(DEPR_SEVERITY ~ Sleep_duration + Marital + Race + Gender + RIDAGEYR + Education + Fam_income, data = df_main_noNA_dpq)
+lmtest::lrtest(nested, complex)
+```
+
+
+```{r}
+#depression severity ~ sleep trouble + sleep duration
+m1 <- svy_vglm(DEPR_SEVERITY ~ Sleep_trouble+Sleep_duration, family = multinomial(refLevel = "No symptoms"), design = sub2_svy_noNA)
+m2 <- svy_vglm(DEPR_SEVERITY ~ Sleep_trouble+Sleep_duration + Gender + RIDAGEYR + Race + Education + Marital + Fam_income, 
+               family = multinomial(refLevel = "No symptoms"), design = sub2_svy_noNA)
+
+#select rows except intercepts, columns 'term,estimate,conf.low,conf.high,p-value' from result tibble tidy.svyVGAM
+r1 <- tidy.svyVGAM(m1, conf.int = T, exponentiate = T)[c(5:16), c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r1 <- r1 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r1 <- r1%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r1 <- r1[,c(1,6,5)] 
+
+#
+r2 <- tidy.svyVGAM(m2, conf.int = T, exponentiate = T)[c(5:16), c(1,2,6,7,5)]
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+r2 <- r2[,c(1,6,5)]
+
+result <- bind_cols(r1,r2[,c(2,3)])
+colnames(result) <- c("Variable","OR (95%CI)","p-value","aOR (95%CI)","p-value") 
+
+#aOR means more than one independent var V.S one dependent var (for m2 here)
+
+pander(result, caption = "Depression Severity ~ Sleep trouble + Sleep duration(with covariates)", keep.line.break=T, 
+       justify = c("left","center","center","center","center"), split.cells = 5, split.table = Inf)
+```
+
+
+## RQ2-2: how does sleep affect depression risk?
+
+```{r}
+# LRT test for interaction term with depr_risk
+#gender ***
+complex <- svyglm(DEPR_RISK ~ Sleep_trouble:Gender+ Race+ Fam_income + RIDAGEYR + Education + Marital, design = df_main_svy, family = quasibinomial)
+nested <- svyglm(DEPR_RISK ~ Sleep_trouble+Gender+ Race+ Fam_income + RIDAGEYR + Education + Marital, design = df_main_svy, family = quasibinomial)
+regTermTest(complex, ~Sleep_trouble:Gender,method = "LRT")
+
+#family income ***
+complex <- svyglm(DEPR_RISK ~ Sleep_trouble:Fam_income+ Race+Gender + RIDAGEYR + Education + Marital, design = df_main_svy, family = quasibinomial)
+nested <- svyglm(DEPR_RISK ~ Sleep_trouble+Fam_income+ Race+Gender + RIDAGEYR + Education + Marital, design = df_main_svy, family = quasibinomial)
+regTermTest(complex, ~Sleep_trouble:Fam_income,method = "LRT")
+
+# sleep duration
+#gender ***
+complex <- svyglm(DEPR_RISK ~ Sleep_duration:Gender+ Race+ Fam_income + RIDAGEYR + Education + Marital, design = df_main_svy, family = quasibinomial)
+nested <- svyglm(DEPR_RISK ~ Sleep_duration+Gender+ Race+ Fam_income + RIDAGEYR + Education + Marital, design = df_main_svy, family = quasibinomial)
+regTermTest(complex, ~Sleep_duration:Gender,method = "LRT")
+
+#family income ***
+complex <- svyglm(DEPR_RISK ~ Sleep_duration:Fam_income+ Race+Gender + RIDAGEYR + Education + Marital, design = df_main_svy, family = quasibinomial)
+nested <- svyglm(DEPR_RISK ~ Sleep_duration+Fam_income+ Race+Gender + RIDAGEYR + Education + Marital, design = df_main_svy, family = quasibinomial)
+regTermTest(complex, ~Sleep_duration:Fam_income,method = "LRT")
+```
+
+
+```{r}
+#depression risk ~ sleep trouble 
+
+# model 1
+m1 <- svyglm(DEPR_RISK ~ Sleep_trouble, design = df_main_svy, family = quasibinomial)
+# model 2
+m2 <- svyglm(DEPR_RISK ~ Sleep_trouble + Gender + RIDAGEYR + Race + Education + Marital + Fam_income, design = df_main_svy, family = quasibinomial )
+
+r1 <- tidy(m1, conf.int = T, exponentiate = T)[c(2),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r1 <- r1 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r1 <- r1%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r1 <- r1[,c(1,6,5)] 
+
+
+r2 <- tidy(m2, conf.int = T, exponentiate = T)[c(2),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r2 <- r2[,c(1,6,5)] 
+
+result <- bind_cols(r1, r2[,c(2,3)])
+colnames(result) <- c("Variable","OR (95%CI)","p-value","aOR (95%CI)","p-value") 
+
+pander(result, caption = "Depression Risk ~ Sleep trouble(with covariates)", keep.line.break=T, 
+       justify = c("left","center","center","center","center"), split.cells = 5,split.table = Inf)
+```
+Interpretation:
+- 4.87 OR: the odds of individuals with sleep trouble to have depression risk is 4.87 times the odds for individuals without sleep trouble.
+- Based on CI and p-value, all OR significant.
+- These results suggest a significant association between having sleep trouble and an increased risk of depression.
+- The consistency of the association in both the unadjusted and adjusted models underscores the robustness of this relationship.
+- The fact that the association remains significant even after controlling for a variety of demographic and socioeconomic variables in the adjusted model indicates that the relationship between sleep trouble and depression risk is not merely a result of these other factors.
+
+```{r}
+#depression risk ~ sleep duration
+
+# model 1
+m1 <- svyglm(DEPR_RISK ~ Sleep_duration, design = df_main_svy, family = quasibinomial)
+# model 2
+m2 <- svyglm(DEPR_RISK ~ Sleep_duration + Gender + RIDAGEYR + Race + Education + Marital + Fam_income, design = df_main_svy, family = quasibinomial )
+
+r1 <- tidy(m1, conf.int = T, exponentiate = T)[c(2:3),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r1 <- r1 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r1 <- r1%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r1 <- r1[,c(1,6,5)] 
+
+
+r2 <- tidy(m2, conf.int = T, exponentiate = T)[c(2:3),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r2 <- r2[,c(1,6,5)] 
+
+result <- bind_cols(r1, r2[,c(2,3)])
+colnames(result) <- c("Variable","OR (95%CI)","p-value","aOR (95%CI)","p-value") 
+
+pander(result, caption = "Depression Risk ~ Sleep duration(with covariates)", keep.line.break=T, 
+       justify = c("left","center","center","center","center"), split.cells = 5,split.table = Inf)
+```
+Interpretation: 
+- OR 2.06: the odds for long sleep individuals having depression risk is 2.06 times the odds for average sleep individuals. Result significant based on CI and p-value. 
+- OR 2.37: the odds for short sleep individuals having depression risk is 2.37 times the odds for average sleep individuals.
+- compare between long and short sleep, short sleep people are more likely to have depression risk.
+
+```{r}
+#depression risk ~ sleep duration + sleep trouble
+
+# model 1
+m1 <- svyglm(DEPR_RISK ~ Sleep_trouble+Sleep_duration, design = sub2_svy_noNA, family = quasibinomial)
+# model 2
+m2 <- svyglm(DEPR_RISK ~ Sleep_trouble + Sleep_duration + Gender + RIDAGEYR + Race + Education + Marital + Fam_income, design = sub2_svy_noNA, family = quasibinomial )
+
+r1 <- tidy(m1, conf.int = T, exponentiate = T)[c(2:4),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r1 <- r1 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r1 <- r1%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r1 <- r1[,c(1,6,5)] 
+
+
+r2 <- tidy(m2, conf.int = T, exponentiate = T)[c(2:4),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r2 <- r2[,c(1,6,5)] 
+
+result <- bind_cols(r1, r2[,c(2,3)])
+colnames(result) <- c("Variable","OR (95%CI)","p-value","aOR (95%CI)","p-value") 
+
+pander(result, caption = "Depression Risk ~ Sleep trouble + Sleep duration(with covariates)", keep.line.break=T, 
+       justify = c("left","center","center","center","center"), split.cells = 5,split.table = Inf)
+```
+
+```{r}
+#interaction model: sleep trouble : gender
+m3 <- svyglm(DEPR_RISK ~ Sleep_trouble  + Sleep_trouble:Gender + RIDAGEYR + Race + Education + Marital + Fam_income, design = df_main_svy, family = quasibinomial )
+r2 <- tidy(m3, conf.int = T, exponentiate = T)[c(19:20),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r2 <- r2[,c(1,6,5)] 
+
+colnames(r2) <- c("Variable","aOR (95%CI)","p-value") 
+
+pander(r2, caption = "Depression risk ~ Sleep trouble(with covariates):gender", keep.line.break=T, 
+       justify = c("left","center","center"), split.cells = 5,split.table = Inf)
+
+
+
+
+#interaction model: sleep trouble : fam income
+m3 <- svyglm(DEPR_RISK ~ Sleep_trouble  + Sleep_trouble:Fam_income + RIDAGEYR + Race + Education + Marital + Gender, design = df_main_svy, family = quasibinomial )
+r2 <- tidy(m3, conf.int = T, exponentiate = T)[c(18:21),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r2 <- r2[,c(1,6,5)] 
+
+colnames(r2) <- c("Variable","aOR (95%CI)","p-value") 
+
+pander(r2, caption = "Depression risk ~ Sleep trouble(with covariates):family income", keep.line.break=T, 
+       justify = c("left","center","center"), split.cells = 5,split.table = Inf)
+```
+
+```{r}
+#interaction model: sleep duration : gender
+m3 <- svyglm(DEPR_RISK ~ Sleep_duration  + Sleep_duration:Gender + RIDAGEYR + Race + Education + Marital + Fam_income, design = df_main_svy, family = quasibinomial )
+r2 <- tidy(m3, conf.int = T, exponentiate = T)[c(20:22),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r2 <- r2[,c(1,6,5)] 
+
+colnames(r2) <- c("Variable","aOR (95%CI)","p-value") 
+
+pander(r2, caption = "Depression risk ~ Sleep duration(with covariates):gender", keep.line.break=T, 
+       justify = c("left","center","center"), split.cells = 5,split.table = Inf)
+
+#interaction model: sleep duration : family income
+m3 <- svyglm(DEPR_RISK ~ Sleep_duration  + Sleep_duration:Fam_income + RIDAGEYR + Race + Education + Marital + Gender, design = df_main_svy, family = quasibinomial )
+r2 <- tidy(m3, conf.int = T, exponentiate = T)[c(19:24),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r2 <- r2[,c(1,6,5)] 
+
+colnames(r2) <- c("Variable","aOR (95%CI)","p-value") 
+
+pander(r2, caption = "Depression risk ~ Sleep duration(with covariates):family income", keep.line.break=T, 
+       justify = c("left","center","center"), split.cells = 5,split.table = Inf)
+```
+
+
+## RQ2-3: how does sleep use affect depression symptoms?
+```{r}
+# depression symptoms ~ sleep trouble + sleep duration
+
+# model 1
+m1 <- svyglm(DEPR_TOT ~ Sleep_trouble + Sleep_duration, design = df_main_svy)
+# model 2
+m2 <- svyglm(DEPR_TOT ~ Sleep_trouble + Sleep_duration + Gender + RIDAGEYR + Race + Education + Marital + Fam_income, design = df_main_svy)
+
+r1 <- tidy(m1, conf.int = T, exponentiate = T)[c(2:4),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r1 <- r1 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r1 <- r1%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r1 <- r1[,c(1,6,5)] 
+
+r2 <- tidy(m2, conf.int = T, exponentiate = T)[c(2:4),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r2 <- r2[,c(1,6,5)] 
+
+result <- bind_cols(r1, r2[,c(2,3)])
+colnames(result) <- c("Variable","Coef. Estm. (95%CI)","p-value","Coef. Estm. (95%CI)","p-value") 
+
+pander(result, caption = "Depression symptoms ~ sleep trouble + sleep duration (with covariates)", keep.line.break=T, 
+       justify = c("left","center","center","center","center"), split.cells = 5,split.table = Inf)
+```
+Interpretation:
+- 16.45: compared to individuals without sleep trouble, people who with sleep trouble have an estimated increase of 16.45 units in the depression symptoms score. Based on CI and p-value, results significant. 
+- 2.78: compared to average sleep individuals, long sleep people have an estimated increase of 2.78 units in depression symptoms score.
+- 2.85: compared to average sleep individuals, short sleep people have an estimated increase of 2.85 units in depression symptoms score.
+- Short sleep have a larger increase on depression symptoms score compared to long sleep.
+
+```{r}
+# LRT test for interaction term with depr_tot
+#gender
+complex <- svyglm(DEPR_TOT ~ Sleep_duration:Gender + Race + RIDAGEYR + Education + Marital + Fam_income, design = df_main_svy)
+nested <- svyglm(DEPR_TOT ~ Sleep_duration+Gender +Race + RIDAGEYR + Education + Marital + Fam_income, design = df_main_svy)
+print(regTermTest(complex, ~Sleep_duration:Gender,method = "LRT"))
+
+#family income
+complex <- svyglm(DEPR_TOT ~ Sleep_duration:Fam_income + Race+ Gender + RIDAGEYR + Education + Marital, design = df_main_svy)
+nested <- svyglm(DEPR_TOT ~ Sleep_duration+Fam_income+ Race+ Gender + RIDAGEYR + Education + Marital, design = df_main_svy)
+print(regTermTest(complex, ~Sleep_duration:Fam_income,method = "LRT"))
+
+#gender
+complex <- svyglm(DEPR_TOT ~ Sleep_trouble:Gender + Race + RIDAGEYR + Education + Marital + Fam_income, design = df_main_svy)
+nested <- svyglm(DEPR_TOT ~ Sleep_trouble+Gender +Race + RIDAGEYR + Education + Marital + Fam_income, design = df_main_svy)
+print(regTermTest(complex, ~Sleep_trouble:Gender,method = "LRT"))
+
+#family income
+complex <- svyglm(DEPR_TOT ~ Sleep_trouble:Fam_income + Race+ Gender + RIDAGEYR + Education + Marital, design = df_main_svy)
+nested <- svyglm(DEPR_TOT ~ Sleep_trouble+Fam_income+ Race+ Gender + RIDAGEYR + Education + Marital, design = df_main_svy)
+print(regTermTest(complex, ~Sleep_trouble:Fam_income,method = "LRT"))
+
+
+```
+
+
+```{r}
+#interaction model: sleep duration : gender
+m3 <- svyglm(DEPR_TOT ~ Sleep_duration  + Sleep_duration:Gender + RIDAGEYR + Race + Education + Marital + Fam_income, design = df_main_svy)
+r2 <- tidy(m3, conf.int = T, exponentiate = T)[c(20:22),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r2 <- r2[,c(1,6,5)] 
+
+colnames(r2) <- c("Variable","Coef. Estm. (95%CI)","p-value") 
+
+pander(r2, caption = "Depression stmptoms score ~ Sleep duration(with covariates):gender", keep.line.break=T, 
+       justify = c("left","center","center"), split.cells = 5,split.table = Inf)
+
+#interaction model: sleep duration : family income
+m3 <- svyglm(DEPR_TOT ~ Sleep_duration  + Sleep_duration:Fam_income + RIDAGEYR + Race + Education + Marital + Gender, design = df_main_svy)
+r2 <- tidy(m3, conf.int = T, exponentiate = T)[c(19:24),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r2 <- r2[,c(1,6,5)] 
+
+colnames(r2) <- c("Variable","Coef. Estm. (95%CI)","p-value") 
+
+pander(r2, caption = "Depression symptoms ~ Sleep duration(with covariates):family income", keep.line.break=T, 
+       justify = c("left","center","center"), split.cells = 5,split.table = Inf)
+```
+
+```{r}
+#interaction model: sleep trouble : gender
+m3 <- svyglm(DEPR_TOT ~ Sleep_trouble  + Sleep_trouble:Gender + RIDAGEYR + Race + Education + Marital + Fam_income , design = df_main_svy)
+r2 <- tidy(m3, conf.int = T, exponentiate = T)[c(19:20),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r2 <- r2[,c(1,6,5)] 
+
+colnames(r2) <- c("Variable","Coef. Estm. (95%CI)","p-value") 
+
+pander(r2, caption = "Depression symptoms ~ Sleep trouble(with covariates):gender", keep.line.break=T, 
+       justify = c("left","center","center"), split.cells = 5,split.table = Inf)
+
+
+#interaction model: sleep trouble : fam income
+m3 <- svyglm(DEPR_TOT ~ Sleep_trouble  + Sleep_trouble:Fam_income + RIDAGEYR + Race + Education + Marital + Gender, design = df_main_svy)
+r2 <- tidy(m3, conf.int = T, exponentiate = T)[c(18:21),c(1,2,6,7,5)]
+#Creates a new column OR_95CI
+r2 <- r2 %>% mutate(OR_95CI = paste0(format(round(estimate,2), nsmall = 2),"(",format(round(conf.low,2),nsmall=2),",",format(round(conf.high,2),nsmall=2),")")) %>% 
+  mutate(p.value = paste0(format(round(p.value,3),nsmall=3)))
+#replace p-value = 0.000 with <0.001
+r2 <- r2%>% mutate(p.value=ifelse(p.value<=0.05,paste0("**",p.value,"**"),p.value)) %>%
+  mutate(p.value=ifelse(p.value=="**0.000**","**<0.001**",p.value))
+#keep all rows, and columns 'term, OR, p-value'
+r2 <- r2[,c(1,6,5)] 
+
+colnames(r2) <- c("Variable","Coef. Estm. (95%CI)","p-value") 
+
+pander(r2, caption = "Depression symptoms ~ Sleep trouble(with covariates):family income", keep.line.break=T, 
+       justify = c("left","center","center"), split.cells = 5,split.table = Inf)
+```
+
+
+
